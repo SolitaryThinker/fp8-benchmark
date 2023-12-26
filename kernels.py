@@ -111,7 +111,8 @@ def benchmark_kernels():
     results = {}
 
     for size, dtype, batch_size, use_fp8 in itertools.product(sizes, dtypes,
-            batch_sizes, [False, True]):
+            # batch_sizes, [False, True]):
+            batch_sizes, [False]):
         print('h={}, inter={}, dtype={}, batch={}, fp8={}'.format(size[0],
             size[1], dtype, batch_sizes, use_fp8))
         hidden_size = size[0]
@@ -119,6 +120,9 @@ def benchmark_kernels():
 
         config = LlamaConfig(hidden_size=hidden_size,
                 intermediate_size=inter_size)
+
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
 
         with te.fp8_autocast(enabled=use_fp8):
             baseline_model = BaselineNet(config).cuda()
@@ -129,9 +133,12 @@ def benchmark_kernels():
             for _ in range(warm_up):
                 output = baseline_model(data)
 
+            start.record()
             for i in range(num_trials):
                 output = baseline_model(data)
-                print(i)
+            end.record()
+            torch.cuda.synchronize()
+            print('baseline_model', start.elapsed_time(end)/num_trials)
 
             fused_model = LayerNormMLP(
                     config.hidden_size,
@@ -149,9 +156,12 @@ def benchmark_kernels():
             for _ in range(warm_up):
                 output = fused_model(data)
 
+            start.record()
             for i in range(num_trials):
                 output = fused_model(data)
-                print(i)
+            end.end()
+            torch.cuda.synchronize()
+            print('fused_model', start.elapsed_time(end)/num_trials)
 
 
     return
