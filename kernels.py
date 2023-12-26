@@ -236,13 +236,17 @@ def test_scaling_factor():
         scale.copy_(ScalingMeta.compute_scaling_factor(amax, scale, fp_max, margin))
         assert scale.item() == 1.0 / 32
 
-def run_test(func):
+def benchmark_kernels():
+    print('benchmark_kernels')
+
+def run_test():
     # test_casting()
-    test_gemm()
+    # test_gemm()
     # test_scaling_factor()
+    benchmark_kernels()
 
 print('testing te')
-run_test(test_gemm)
+run_test()
 print('done run test')
 
 """
