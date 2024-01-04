@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import itertools
-import msamp
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (
         LlamaMLP,
@@ -14,7 +13,10 @@ from transformers.models.llama.modeling_llama import (
 )
 import numpy as np
 import matplotlib.pyplot as plt
+import nvtx
 
+"""
+import msamp
 from msamp.common.dtype import Dtypes
 from msamp.operators.gemm import Gemm
 from msamp.operators.arithmetic import Arithmetic
@@ -25,7 +27,9 @@ from msamp.te.modules import (
         MSAMPLayerNormMLP,
         MSAMPLayerNormLinear
 )
+"""
 
+import layernorm_mlp as qtest
 
 def test_casting():
     print('test casting')
@@ -89,6 +93,28 @@ class BaselineNet(nn.Module):
         x = self.mlp(x)
         return x
 
+class NaiveCastNet(nn.Module):
+    def __init__(self, config):
+        super(NaiveCastNet, self).__init__()
+        self.layernorm = LlamaRMSNorm(config.hidden_size)
+        self.mlp = LlamaMLP(config)
+
+    def forward(self, x):
+        x = self.layernorm(x)
+        x = self.mlp(x)
+        return x
+
+class QSiluNet(nn.Module):
+    def __init__(self, config):
+        super(QSiluNet, self).__init__()
+        self.layernorm = LlamaRMSNorm(config.hidden_size)
+        self.mlp = LlamaMLP(config)
+
+    def forward(self, x):
+        x = self.layernorm(x)
+        x = self.mlp(x)
+        return x
+
 class FusedNet(nn.Module):
     pass
 
@@ -96,7 +122,7 @@ class FusedNet(nn.Module):
 
 def benchmark_kernels():
     print('benchmark_kernels')
-    num_trials = 10
+    num_trials = 20
     warm_up = 10
 
     hsizes = [4096, 5120, 8192]
@@ -106,15 +132,16 @@ def benchmark_kernels():
     dtypes = [torch.float32, torch.float16]
     dtypes = [torch.bfloat16]
     batch_sizes=[32, 64]
-    batch_sizes=[32]
+    # batch_sizes=[32]
     # qtypes = [Dtypes.kfloat8_e4m3]
     results = {}
 
     for size, dtype, batch_size, use_fp8 in itertools.product(sizes, dtypes,
             # batch_sizes, [False, True]):
             batch_sizes, [False]):
-        print('h={}, inter={}, dtype={}, batch={}, fp8={}'.format(size[0],
-            size[1], dtype, batch_sizes, use_fp8))
+        # string = 'h={}, inter={}, dtype={}, batch={}, fp8={}'.format(size[0], size[1], dtype, batch_sizes, use_fp8)
+        string = 'h={}, inter={}, batch={}, fp8={}'.format(size[0], size[1], batch_sizes, use_fp8)
+        print(string)
         hidden_size = size[0]
         inter_size = size[1]
 
@@ -134,8 +161,9 @@ def benchmark_kernels():
                 output = baseline_model(data)
 
             start.record()
-            for i in range(num_trials):
-                output = baseline_model(data)
+            with nvtx.annotate('base '+ string, color="red"):
+                for i in range(num_trials):
+                    output = baseline_model(data)
             end.record()
             torch.cuda.synchronize()
             print('baseline_model', start.elapsed_time(end)/num_trials)
@@ -157,9 +185,10 @@ def benchmark_kernels():
                 output = fused_model(data)
 
             start.record()
-            for i in range(num_trials):
-                output = fused_model(data)
-            end.end()
+            with nvtx.annotate('fused '+ string, color="green"):
+                for i in range(num_trials):
+                    output = fused_model(data)
+            end.record()
             torch.cuda.synchronize()
             print('fused_model', start.elapsed_time(end)/num_trials)
 
