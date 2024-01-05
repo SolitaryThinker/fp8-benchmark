@@ -103,6 +103,7 @@ def share_weights():
 def benchmark_kernels():
     print('benchmark_kernels')
     enable_fp8 = False
+    enable_fp16 = True
     num_trials = 20
     warm_up = 10
     torch.manual_seed(1234)
@@ -190,7 +191,45 @@ def benchmark_kernels():
         torch.cuda.synchronize()
         print(string + ', fused_model,', start.elapsed_time(end)/num_trials)
 
+        if enable_fp16:
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                for _ in range(warm_up):
+                    output = baseline_model(data)
+
+                start.record()
+                with nvtx.annotate('base '+ string, color="red"):
+                    for i in range(num_trials):
+                        output = baseline_model(data)
+                end.record()
+                torch.cuda.synchronize()
+                print(string + ', fp16_baseline_model,', start.elapsed_time(end)/num_trials)
+
+
+                for _ in range(warm_up):
+                    output = naive_te_model(data, False)
+
+                start.record()
+                with nvtx.annotate('naive '+ string, color="blue"):
+                    for i in range(num_trials):
+                        output = naive_te_model(data, False)
+                end.record()
+                torch.cuda.synchronize()
+                print(string + ', fp16_naive_te_model,', start.elapsed_time(end)/num_trials)
+
+
+                for _ in range(warm_up):
+                    output = fused_model(data)
+
+                start.record()
+                with nvtx.annotate('fused '+ string, color="green"):
+                    for i in range(num_trials):
+                        output = fused_model(data)
+                end.record()
+                torch.cuda.synchronize()
+                print(string + ', fp16_fused_model,', start.elapsed_time(end)/num_trials)
+
         if enable_fp8:
+            fp8_format = Format.HYBRID
             fp8_recipe = DelayedScaling(fp8_format=fp8_format,
                     amax_history_len=16, amax_compute_algo="max")
             with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
