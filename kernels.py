@@ -134,9 +134,9 @@ def benchmark_kernels():
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
 
-        baseline_model = BaselineNet(config).cuda()
+        baseline_model = BaselineNet(config)
         baseline_model.train()
-        naive_te_model = TENaiveNet(config).cuda()
+        naive_te_model = TENaiveNet(config)
         naive_te_model.train()
         fused_model = LayerNormMLP(
                 config.hidden_size,
@@ -148,7 +148,7 @@ def benchmark_kernels():
                 #params_dtype=,
                 #seq_length=seq_length,
                 micro_batch_size=batch_size
-                ).cuda()
+                )
         fused_model.train()
 
         # print(baseline_model.mlp.
@@ -156,6 +156,7 @@ def benchmark_kernels():
         data = torch.rand(batch_size, config.hidden_size).cuda()
         # print('shape:', data.shape)
 
+        baseline_model.cuda()
         for _ in range(warm_up):
             output = baseline_model(data)
 
@@ -165,9 +166,12 @@ def benchmark_kernels():
                 output = baseline_model(data)
         end.record()
         torch.cuda.synchronize()
+        baseline_model.cpu()
+        torch.cuda.empty_cache()
         print(string + ', baseline_model,', start.elapsed_time(end)/num_trials)
 
 
+        naive_te_model.cuda()
         for _ in range(warm_up):
             output = naive_te_model(data, False)
 
@@ -177,9 +181,12 @@ def benchmark_kernels():
                 output = naive_te_model(data, False)
         end.record()
         torch.cuda.synchronize()
+        naive_te_model.cpu()
+        torch.cuda.empty_cache()
         print(string + ', naive_te_model,', start.elapsed_time(end)/num_trials)
 
 
+        fused_model.cuda()
         for _ in range(warm_up):
             output = fused_model(data)
 
@@ -189,10 +196,13 @@ def benchmark_kernels():
                 output = fused_model(data)
         end.record()
         torch.cuda.synchronize()
+        fused_model.cpu()
+        torch.cuda.empty_cache()
         print(string + ', fused_model,', start.elapsed_time(end)/num_trials)
 
         if enable_fp16:
             with torch.autocast(device_type='cuda', dtype=torch.float16):
+                baseline_model.cuda()
                 for _ in range(warm_up):
                     output = baseline_model(data)
 
@@ -202,9 +212,12 @@ def benchmark_kernels():
                         output = baseline_model(data)
                 end.record()
                 torch.cuda.synchronize()
+                baseline_model.cpu()
+                torch.cuda.empty_cache()
                 print(string + ', fp16_baseline_model,', start.elapsed_time(end)/num_trials)
 
 
+                naive_te_model.cuda()
                 for _ in range(warm_up):
                     output = naive_te_model(data, False)
 
@@ -214,9 +227,12 @@ def benchmark_kernels():
                         output = naive_te_model(data, False)
                 end.record()
                 torch.cuda.synchronize()
+                naive_te_model.cpu()
+                torch.cuda.empty_cache()
                 print(string + ', fp16_naive_te_model,', start.elapsed_time(end)/num_trials)
 
 
+                fused_model.cuda()
                 for _ in range(warm_up):
                     output = fused_model(data)
 
@@ -226,6 +242,8 @@ def benchmark_kernels():
                         output = fused_model(data)
                 end.record()
                 torch.cuda.synchronize()
+                fused_model.cpu()
+                torch.cuda.empty_cache()
                 print(string + ', fp16_fused_model,', start.elapsed_time(end)/num_trials)
 
         if enable_fp8:
@@ -233,6 +251,7 @@ def benchmark_kernels():
             fp8_recipe = DelayedScaling(fp8_format=fp8_format,
                     amax_history_len=16, amax_compute_algo="max")
             with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                naive_te_model.cuda()
                 for _ in range(warm_up):
                     output = naive_te_model(data, True)
 
@@ -242,9 +261,12 @@ def benchmark_kernels():
                         output = naive_te_model(data, True)
                 end.record()
                 torch.cuda.synchronize()
+                naive_te_model.cpu()
+                torch.cuda.empty_cache()
                 print(string + ', fp8_naive_te_model,', start.elapsed_time(end)/num_trials)
 
 
+                fused_model.cuda()
                 for _ in range(warm_up):
                     output = fused_model(data)
 
@@ -254,7 +276,11 @@ def benchmark_kernels():
                         output = fused_model(data)
                 end.record()
                 torch.cuda.synchronize()
+                fused_model.cpu()
+                torch.cuda.empty_cache()
                 print(string + ', fp8_fused_model,', start.elapsed_time(end)/num_trials)
+
+        torch.cuda.empty_cache()
         print('===')
 
 
