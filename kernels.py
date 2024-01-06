@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import itertools
+import functools
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (
         LlamaMLP,
@@ -32,7 +33,48 @@ from msamp.te.modules import (
 )
 """
 
-import layernorm_mlp as qtest
+import layernorm_mlp as prototype
+
+num_trials = 20
+warm_up = 10
+enable_fp8 = False
+enable_fp16 = True
+
+class TEOptimalNet(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        hidden_size = config.hidden_size
+        ffn_hidden_size = config.intermediate_size
+        self.layernorm = te.LayerNorm(hidden_size)
+        self.linear1 = te.Linear(hidden_size, ffn_hidden_size, bias=True)
+        self.linear2 = te.Linear(ffn_hidden_size, hidden_size, bias=True)
+
+    def forward(self, x: torch.Tensor, use_fp8=False) -> torch.Tensor:
+        if not use_fp8:
+            x = self.layernorm(x)
+            x = self.linear1(x)
+            x = torch.nn.functional.silu(x)
+            # x = tex.swiglu (
+                    # fc1_out,
+                    # fp8_meta["scaling_fwd"],
+                    # tex.FP8FwdTensors.GEMM2_INPUT,
+                    # fp8_dtype_forward,
+                # )
+            x = self.linear2(x)
+        else:
+            x = self.layernorm(x)
+            # x = tex.cast_to_fp8(x)
+            x = self.linear1(x)
+            x = torch.nn.functional.silu(x)
+            # x = tex.swiglu (
+                    # fc1_out,
+                    # fp8_meta["scaling_fwd"],
+                    # tex.FP8FwdTensors.GEMM2_INPUT,
+                    # fp8_dtype_forward,
+                # )
+            x = self.linear2(x)
+
+        return x
 
 class TENaiveNet(nn.Module):
     """Feed-forward network in Transformer layer
@@ -45,7 +87,7 @@ class TENaiveNet(nn.Module):
         self.linear1 = te.Linear(hidden_size, ffn_hidden_size, bias=True)
         self.linear2 = te.Linear(ffn_hidden_size, hidden_size, bias=True)
 
-    def forward(self, x: torch.Tensor, use_fp8: bool) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, use_fp8=False) -> torch.Tensor:
         if not use_fp8:
             x = self.layernorm(x)
             x = self.linear1(x)
@@ -99,13 +141,35 @@ class QSiluNet(nn.Module):
 def share_weights():
     pass
 
+def benchmark_kernel(start, end, string, model, model_name, data, use_fp8=False, use_fp16=False):
+    assert not (use_fp8 and use_fp16)
+
+    model.cuda()
+    for _ in range(warm_up):
+        output = model(data)
+
+    start.record()
+    prefix = ''
+    if use_fp8:
+        prefix = 'fp8_'
+    if use_fp16:
+        prefix = 'fp16_'
+    string += ', ' + prefix + model_name
+    with nvtx.annotate('base '+ string, color="red"):
+        for i in range(num_trials):
+            output = model(data)
+    end.record()
+    torch.cuda.synchronize()
+
+    model.cpu()
+    torch.cuda.empty_cache()
+    string += ','
+    print(string, start.elapsed_time(end)/num_trials)
+
+
 
 def benchmark_kernels():
-    print('benchmark_kernels')
-    enable_fp8 = False
-    enable_fp16 = True
-    num_trials = 20
-    warm_up = 10
+    global benchmark_kernel
     torch.manual_seed(1234)
 
     hsizes = [4096, 5120, 8192]
@@ -115,7 +179,7 @@ def benchmark_kernels():
     dtypes = [torch.float32, torch.float16]
     dtypes = [torch.bfloat16]
     batch_sizes=[32, 64]
-    # batch_sizes=[32]
+    batch_sizes=[32]
     # qtypes = [Dtypes.kfloat8_e4m3]
     results = {}
 
@@ -134,6 +198,10 @@ def benchmark_kernels():
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
 
+        bench = functools.partial(benchmark_kernel, start, end,
+                string)
+
+
         baseline_model = BaselineNet(config)
         baseline_model.train()
         naive_te_model = TENaiveNet(config)
@@ -143,142 +211,53 @@ def benchmark_kernels():
                 config.intermediate_size,
                 eps=config.rms_norm_eps,
                 normalization='RMSNorm',
-                activation='swiglu',
+                activation='gelu',
                 #TODO
                 #params_dtype=,
                 #seq_length=seq_length,
                 micro_batch_size=batch_size
                 )
         fused_model.train()
+        custom_fused_model = prototype.LayerNormMLP(
+                config.hidden_size,
+                config.intermediate_size,
+                eps=config.rms_norm_eps,
+                normalization='RMSNorm',
+                activation='relu',
+                #TODO
+                #params_dtype=,
+                #seq_length=seq_length,
+                micro_batch_size=batch_size
+                )
+        custom_fused_model.train()
 
         # print(baseline_model.mlp.
 
         data = torch.rand(batch_size, config.hidden_size).cuda()
         # print('shape:', data.shape)
 
-        baseline_model.cuda()
-        for _ in range(warm_up):
-            output = baseline_model(data)
-
-        start.record()
-        with nvtx.annotate('base '+ string, color="red"):
-            for i in range(num_trials):
-                output = baseline_model(data)
-        end.record()
-        torch.cuda.synchronize()
-        baseline_model.cpu()
-        torch.cuda.empty_cache()
-        print(string + ', baseline_model,', start.elapsed_time(end)/num_trials)
-
-
-        naive_te_model.cuda()
-        for _ in range(warm_up):
-            output = naive_te_model(data, False)
-
-        start.record()
-        with nvtx.annotate('naive '+ string, color="blue"):
-            for i in range(num_trials):
-                output = naive_te_model(data, False)
-        end.record()
-        torch.cuda.synchronize()
-        naive_te_model.cpu()
-        torch.cuda.empty_cache()
-        print(string + ', naive_te_model,', start.elapsed_time(end)/num_trials)
-
-
-        fused_model.cuda()
-        for _ in range(warm_up):
-            output = fused_model(data)
-
-        start.record()
-        with nvtx.annotate('fused '+ string, color="green"):
-            for i in range(num_trials):
-                output = fused_model(data)
-        end.record()
-        torch.cuda.synchronize()
-        fused_model.cpu()
-        torch.cuda.empty_cache()
-        print(string + ', fused_model,', start.elapsed_time(end)/num_trials)
+        bench(baseline_model, "hf-llama", data)
+        bench(naive_te_model, "te-naive", data)
+        bench(fused_model, "te-fused", data)
 
         if enable_fp16:
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                baseline_model.cuda()
-                for _ in range(warm_up):
-                    output = baseline_model(data)
-
-                start.record()
-                with nvtx.annotate('base '+ string, color="red"):
-                    for i in range(num_trials):
-                        output = baseline_model(data)
-                end.record()
-                torch.cuda.synchronize()
-                baseline_model.cpu()
-                torch.cuda.empty_cache()
-                print(string + ', fp16_baseline_model,', start.elapsed_time(end)/num_trials)
-
-
-                naive_te_model.cuda()
-                for _ in range(warm_up):
-                    output = naive_te_model(data, False)
-
-                start.record()
-                with nvtx.annotate('naive '+ string, color="blue"):
-                    for i in range(num_trials):
-                        output = naive_te_model(data, False)
-                end.record()
-                torch.cuda.synchronize()
-                naive_te_model.cpu()
-                torch.cuda.empty_cache()
-                print(string + ', fp16_naive_te_model,', start.elapsed_time(end)/num_trials)
-
-
-                fused_model.cuda()
-                for _ in range(warm_up):
-                    output = fused_model(data)
-
-                start.record()
-                with nvtx.annotate('fused '+ string, color="green"):
-                    for i in range(num_trials):
-                        output = fused_model(data)
-                end.record()
-                torch.cuda.synchronize()
-                fused_model.cpu()
-                torch.cuda.empty_cache()
-                print(string + ', fp16_fused_model,', start.elapsed_time(end)/num_trials)
+                bench(baseline_model, "hf-llama", data, use_fp16=True)
+                bench(naive_te_model, "te-naive", data, use_fp16=True)
+                bench(fused_model, "te-fused", data, use_fp16=True)
+                bench(custom_fused_model, "te-cus-fused", data, use_fp16=True)
 
         if enable_fp8:
             fp8_format = Format.HYBRID
-            fp8_recipe = DelayedScaling(fp8_format=fp8_format,
-                    amax_history_len=16, amax_compute_algo="max")
-            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                naive_te_model.cuda()
-                for _ in range(warm_up):
-                    output = naive_te_model(data, True)
-
-                start.record()
-                with nvtx.annotate('fp8_naive '+ string, color="blue"):
-                    for i in range(num_trials):
-                        output = naive_te_model(data, True)
-                end.record()
-                torch.cuda.synchronize()
-                naive_te_model.cpu()
-                torch.cuda.empty_cache()
-                print(string + ', fp8_naive_te_model,', start.elapsed_time(end)/num_trials)
-
-
-                fused_model.cuda()
-                for _ in range(warm_up):
-                    output = fused_model(data)
-
-                start.record()
-                with nvtx.annotate('fp8_fused '+ string, color="green"):
-                    for i in range(num_trials):
-                        output = fused_model(data)
-                end.record()
-                torch.cuda.synchronize()
-                fused_model.cpu()
-                torch.cuda.empty_cache()
-                print(string + ', fp8_fused_model,', start.elapsed_time(end)/num_trials)
+            for l in range(0, 16):
+                print('len,', i)
+                fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                        amax_history_len=i, amax_compute_algo="max")
+                with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                    bench(naive_te_model, "te-naive", data, use_fp8=True)
+                    bench(fused_model, "te-fused", data, use_fp8=True)
+                    bench(custom_fused_model, "te-cus-fused", data, use_fp8=True)
+                print('|||||||')
 
         torch.cuda.empty_cache()
         print('===')
