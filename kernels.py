@@ -256,13 +256,20 @@ def benchmark_kernels():
 
         if enable_fp8:
             fp8_format = Format.HYBRID
-            for l in range(0, 16):
-                print('len,', i)
+            # for l in range(0, 16):
+            for l in [1, 16]:
+                print('len,', l)
                 fp8_recipe = DelayedScaling(fp8_format=fp8_format,
-                        amax_history_len=i, amax_compute_algo="max")
+                        amax_history_len=l, amax_compute_algo="max")
                 with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                     bench(naive_te_model, "te-naive", data, use_fp8=True)
+                fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                        amax_history_len=l, amax_compute_algo="max")
+                with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                     bench(fused_model, "te-fused", data, use_fp8=True)
+                fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                        amax_history_len=l, amax_compute_algo="max")
+                with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                     bench(custom_fused_model, "te-cus-fused", data, use_fp8=True)
                 print('|||||||')
 
