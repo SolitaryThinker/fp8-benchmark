@@ -144,27 +144,33 @@ def share_weights():
 def benchmark_kernel(start, end, string, model, model_name, data, use_fp8=False, use_fp16=False):
     assert not (use_fp8 and use_fp16)
 
-    model.cuda()
-    for _ in range(warm_up):
-        output = model(data)
+    with torch.no_grad():
 
-    start.record()
-    prefix = ''
-    if use_fp8:
-        prefix = 'fp8_'
-    if use_fp16:
-        prefix = 'fp16_'
-    string += ', ' + prefix + model_name
-    with nvtx.annotate('base '+ string, color="red"):
-        for i in range(num_trials):
+        model.cuda()
+        for _ in range(warm_up):
             output = model(data)
-    end.record()
-    torch.cuda.synchronize()
 
-    model.cpu()
-    torch.cuda.empty_cache()
-    string += ','
-    print(string, start.elapsed_time(end)/num_trials)
+        prefix = ''
+        if use_fp8:
+            prefix = 'fp8_'
+        if use_fp16:
+            prefix = 'fp16_'
+        string += ', ' + prefix + model_name
+
+
+        start.record()
+        with nvtx.annotate('base '+ string, color="red"):
+            for i in range(num_trials):
+                output = model(data)
+        end.record()
+        torch.cuda.synchronize()
+
+        model.cpu()
+        torch.cuda.empty_cache()
+        # zero grad
+        #data.detach()
+        string += ','
+        print(string, start.elapsed_time(end)/num_trials)
 
 
 
@@ -211,7 +217,7 @@ def benchmark_kernels():
                 config.intermediate_size,
                 eps=config.rms_norm_eps,
                 normalization='RMSNorm',
-                activation='gelu',
+                activation='relu',
                 #TODO
                 #params_dtype=,
                 #seq_length=seq_length,
@@ -234,6 +240,7 @@ def benchmark_kernels():
         # print(baseline_model.mlp.
 
         data = torch.rand(batch_size, config.hidden_size).cuda()
+        data.detach()
         # print('shape:', data.shape)
 
         bench(baseline_model, "hf-llama", data)

@@ -277,7 +277,7 @@ class _LayerNormMLP(torch.autograd.Function):
             if not is_grad_enabled:
                 clear_tensor_data(ln_out_total)
 
-            gelu_out = torch.nn.functional.gelu(fc1_out)
+            gelu_out = torch.nn.functional.relu(fc1_out)
             # gelu_out = activation_func(
                 # fc1_out,
                 # fp8_meta["scaling_fwd"],
@@ -378,7 +378,7 @@ class _LayerNormMLP(torch.autograd.Function):
                     gelu_out, _, fc1_out = fc1_outputs
                 else:
                     fc1_out, _, _ = fc1_outputs
-                    gelu_out = torch.nn.functional.gelu(fc1_out)
+                    gelu_out = torch.nn.functional.relu(fc1_out)
                     # gelu_out = activation_func(fc1_out,
                                                # None,
                                                # tex.FP8FwdTensors.GEMM2_INPUT,
