@@ -129,7 +129,7 @@ class _LayerNormMLP(torch.autograd.Function):
 
         update_fp8_weights = is_first_microbatch is None or is_first_microbatch
 
-        # activation_func = _act_func(activation)[0]
+        activation_func = _act_func(activation)[0]
 
         # Cast for native AMP
         inputmat = cast_if_needed(inputmat, activation_dtype)
@@ -277,13 +277,13 @@ class _LayerNormMLP(torch.autograd.Function):
             if not is_grad_enabled:
                 clear_tensor_data(ln_out_total)
 
-            gelu_out = torch.nn.functional.relu(fc1_out)
-            # gelu_out = activation_func(
-                # fc1_out,
-                # fp8_meta["scaling_fwd"],
-                # tex.FP8FwdTensors.GEMM2_INPUT,
-                # fp8_dtype_forward,
-            # )
+            # gelu_out = torch.nn.functional.relu(fc1_out)
+            gelu_out = activation_func(
+                fc1_out,
+                fp8_meta["scaling_fwd"],
+                tex.FP8FwdTensors.GEMM2_INPUT,
+                fp8_dtype_forward,
+            )
             if not is_grad_enabled:
                 clear_tensor_data(fc1_out)
 
@@ -378,11 +378,11 @@ class _LayerNormMLP(torch.autograd.Function):
                     gelu_out, _, fc1_out = fc1_outputs
                 else:
                     fc1_out, _, _ = fc1_outputs
-                    gelu_out = torch.nn.functional.relu(fc1_out)
-                    # gelu_out = activation_func(fc1_out,
-                                               # None,
-                                               # tex.FP8FwdTensors.GEMM2_INPUT,
-                                               # TE_DType[fc1_out.dtype])
+                    # gelu_out = torch.nn.functional.relu(fc1_out)
+                    gelu_out = activation_func(fc1_out,
+                                               None,
+                                               tex.FP8FwdTensors.GEMM2_INPUT,
+                                               TE_DType[fc1_out.dtype])
             if not is_grad_enabled:
                 clear_tensor_data(fc1_out)
 
