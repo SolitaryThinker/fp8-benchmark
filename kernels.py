@@ -37,8 +37,9 @@ import layernorm_mlp as prototype
 
 fwd = False
 bwd = True
-num_trials = 2000
-warm_up = 10
+bwd_only = True
+num_trials = 20
+warm_up = 50
 enable_fp8 = False
 enable_fp16 = True
 
@@ -203,6 +204,63 @@ def benchmark_kernel_bwd(string, model, model_name, data, dy, use_fp8=False, use
     string += ','
     print(string, start.elapsed_time(end)/num_trials)
 
+def benchmark_kernel_bwd_only(string, model, model_name, data, dy, use_fp8=False, use_fp16=False):
+    assert not (use_fp8 and use_fp16)
+    print(string)
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
+    model.cuda()
+    for _ in range(warm_up):
+        output = model(data)
+
+    prefix = ''
+    if use_fp8:
+        prefix = 'fp8_'
+    if use_fp16:
+        prefix = 'fp16_'
+    string += ', ' + prefix + model_name
+
+    times = 0
+
+    if use_fp16:
+        print('kernel 16')
+        # print('starting m2')
+        for i in range(num_trials):
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                # with nvtx.annotate('base '+ string, color="red"):
+                output = model(data)
+            start.record()
+            output.backward(dy)
+            end.record()
+            torch.cuda.synchronize()
+            times += start.elapsed_time(end)
+
+        # print('m2', string, times / num_trials)
+
+    if use_fp8:
+        print('kernel 8')
+        fp8_format = Format.HYBRID
+        fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                amax_history_len=16, amax_compute_algo="max")
+        for i in range(num_trials):
+            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                # with nvtx.annotate('base '+ string, color="red"):
+                output = model(data)
+            start.record()
+            output.backward(dy)
+            end.record()
+            torch.cuda.synchronize()
+            times += start.elapsed_time(end)
+
+    model.cpu()
+    torch.cuda.empty_cache()
+    # zero grad
+    #data.detach()
+    string += ','
+    print(string, start.elapsed_time(end)/num_trials)
+
 def benchmark_kernel(start, end, string, model, model_name, data, use_fp8=False, use_fp16=False):
     assert not (use_fp8 and use_fp16)
 
@@ -269,6 +327,7 @@ def benchmark_kernels():
         bench = functools.partial(benchmark_kernel, start, end,
                 string)
         bench_bwd = functools.partial(benchmark_kernel_bwd, string)
+        bench_bwd_only = functools.partial(benchmark_kernel_bwd_only, string)
 
 
         baseline_model = BaselineNet(config)
@@ -344,19 +403,42 @@ def benchmark_kernels():
             torch.cuda.empty_cache()
             print('===')
 
+        if bwd_only:
+            print('bwd_only')
+            if enable_fp16:
+                data = torch.rand(batch_size, config.hidden_size, dtype=torch.float16).cuda()
+                dy = torch.rand(batch_size, config.hidden_size, dtype=torch.float16).cuda()
+                # data.detach()
+                # with torch.autocast(device_type='cuda', dtype=torch.float16):
+                bench_bwd_only(baseline_model, "hf-llama", data, dy, use_fp16=True)
+                # bench_bwd_only(naive_te_model, "te-naive", data, use_fp16=True)
+                bench_bwd_only(fused_model, "te-fused", data, dy, use_fp16=True)
+                bench_bwd_only(custom_fused_model, "te-cus-fused", data, dy, use_fp16=True)
+
+            if enable_fp8:
+                # fp8_format = Format.HYBRID
+                # for l in range(0, 16):
+                # for l in [1, 16]:
+                    # print('len,', l)
+                    # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                            # amax_history_len=l, amax_compute_algo="max")
+                    # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                        # bench_bwd_only(naive_te_model, "te-naive", data, use_fp8=True)
+                    # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                            # amax_history_len=l, amax_compute_algo="max")
+                    # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                bench_bwd_only(fused_model, "te-fused", data, dy, use_fp8=True)
+                    # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                            # amax_history_len=l, amax_compute_algo="max")
+                    # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                bench_bwd_only(custom_fused_model, "te-cus-fused", data, dy, use_fp8=True)
+                print('|||||||')
+
+
         if bwd:
             print('fwd+bwd')
             # print(baseline_model.mlp.
 
-            # data = torch.rand(batch_size, config.hidden_size, dtype=torch.float16).cuda()
-            # dy = torch.rand(batch_size, config.hidden_size, dtype=torch.float16).cuda()
-            # data = torch.rand(batch_size, config.hidden_size).cuda()
-            # dy = torch.rand(batch_size, config.hidden_size).cuda()
-            # print('shape:', data.shape)
-
-            # bench_bwd(baseline_model, "hf-llama", data, dy)
-            # bench_bwd(naive_te_model, "te-naive", data)
-            # bench_bwd(fused_model, "te-fused", data, dy)
 
             if enable_fp16:
                 data = torch.rand(batch_size, config.hidden_size, dtype=torch.float16).cuda()
@@ -369,23 +451,23 @@ def benchmark_kernels():
                 bench_bwd(custom_fused_model, "te-cus-fused", data, dy, use_fp16=True)
 
             if enable_fp8:
-                fp8_format = Format.HYBRID
+                # fp8_format = Format.HYBRID
                 # for l in range(0, 16):
-                for l in [1, 16]:
-                    print('len,', l)
+                # for l in [1, 16]:
+                    # print('len,', l)
                     # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
                             # amax_history_len=l, amax_compute_algo="max")
                     # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                         # bench_bwd(naive_te_model, "te-naive", data, use_fp8=True)
-                    fp8_recipe = DelayedScaling(fp8_format=fp8_format,
-                            amax_history_len=l, amax_compute_algo="max")
-                    with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                        bench_bwd(fused_model, "te-fused", data, dy, use_fp8=True)
-                    fp8_recipe = DelayedScaling(fp8_format=fp8_format,
-                            amax_history_len=l, amax_compute_algo="max")
-                    with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                        bench_bwd(custom_fused_model, "te-cus-fused", data, dy, use_fp8=True)
-                    print('|||||||')
+                    # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                            # amax_history_len=l, amax_compute_algo="max")
+                    # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                bench_bwd(fused_model, "te-fused", data, dy, use_fp8=True)
+                    # fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                            # amax_history_len=l, amax_compute_algo="max")
+                    # with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                bench_bwd(custom_fused_model, "te-cus-fused", data, dy, use_fp8=True)
+                print('|||||||')
 
             torch.cuda.empty_cache()
             print('===')
