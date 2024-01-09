@@ -171,7 +171,9 @@ def benchmark_kernel_bwd(string, model, model_name, data, dy, use_fp8=False, use
         # end.record()
         # torch.cuda.synchronize()
 
+    string += ','
 
+    time = 0
     if use_fp16:
         print('kernel 16')
         start.record()
@@ -182,6 +184,19 @@ def benchmark_kernel_bwd(string, model, model_name, data, dy, use_fp8=False, use
             output.backward(dy)
         end.record()
         torch.cuda.synchronize()
+        print('m1', string, start.elapsed_time(end)/num_trials)
+        time = 0
+        for i in range(num_trials):
+            start.record()
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                # with nvtx.annotate('base '+ string, color="red"):
+                output = model(data)
+            output.backward(dy)
+            end.record()
+            torch.cuda.synchronize()
+            time += start.elapsed_time(end)
+        print('m2', string, time/num_trials)
+        time = 0
 
     if use_fp8:
         print('kernel 8')
@@ -196,13 +211,27 @@ def benchmark_kernel_bwd(string, model, model_name, data, dy, use_fp8=False, use
             output.backward(dy)
         end.record()
         torch.cuda.synchronize()
+        print('m1', string, start.elapsed_time(end)/num_trials)
+        time = 0
+
+        fp8_format = Format.HYBRID
+        fp8_recipe = DelayedScaling(fp8_format=fp8_format,
+                amax_history_len=16, amax_compute_algo="max")
+        for i in range(num_trials):
+            start.record()
+            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                # with nvtx.annotate('base '+ string, color="red"):
+                output = model(data)
+            output.backward(dy)
+            end.record()
+            torch.cuda.synchronize()
+            time += start.elapsed_time(end)
+        print('m2', string, time/num_trials)
 
     model.cpu()
     torch.cuda.empty_cache()
     # zero grad
     #data.detach()
-    string += ','
-    print(string, start.elapsed_time(end)/num_trials)
 
 def benchmark_kernel_bwd_only(string, model, model_name, data, dy, use_fp8=False, use_fp16=False):
     assert not (use_fp8 and use_fp16)
